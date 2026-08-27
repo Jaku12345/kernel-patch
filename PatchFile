@@ -1,0 +1,238 @@
+diff -ruN linux-6.12.58/fs/binfmt_elf.c linux-edited/fs/binfmt_elf.c
+--- linux-6.12.58/fs/binfmt_elf.c	2025-11-13 15:34:41.000000000 -0500
++++ linux-edited/fs/binfmt_elf.c	2025-11-22 04:53:28.518213995 -0500
+@@ -816,6 +816,8 @@
+ 	return ret == -ENOENT ? 0 : ret;
+ }
+ 
++#define      ELFCRYPT          "\177ELC"
++
+ static int load_elf_binary(struct linux_binprm *bprm)
+ {
+ 	struct file *interpreter = NULL; /* to shut gcc up */
+@@ -841,8 +843,15 @@
+ 
+ 	retval = -ENOEXEC;
+ 	/* First of all, some simple consistency checks */
+-	if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
+-		goto out;
++        if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0 && memcmp(elf_ex->e_ident, ELFCRYPT, SELFMAG) != 0)
++                goto out;
++
++        if (memcmp(elf_ex->e_ident, ELFCRYPT, SELFMAG) == 0) {
++                printk("elfcrypt process, is_enabled before value: %d \n", current->is_enabled);
++                current->is_enabled = 1;
++                printk("elfcrypt process, is_enabled after value: %d \n", current->is_enabled);
++        }
++
+ 
+ 	if (elf_ex->e_type != ET_EXEC && elf_ex->e_type != ET_DYN)
+ 		goto out;
+Binary files linux-6.12.58/fs/.binfmt_elf.c.swp and linux-edited/fs/.binfmt_elf.c.swp differ
+diff -ruN linux-6.12.58/include/linux/page-flags.h linux-edited/include/linux/page-flags.h
+--- linux-6.12.58/include/linux/page-flags.h	2025-11-13 15:34:41.000000000 -0500
++++ linux-edited/include/linux/page-flags.h	2025-11-22 03:54:19.972991844 -0500
+@@ -110,6 +110,7 @@
+ 	PG_reclaim,		/* To be reclaimed asap */
+ 	PG_swapbacked,		/* Page is backed by RAM/swap */
+ 	PG_unevictable,		/* Page is "unevictable"  */
++	PG_ramcrypt,		/* Page is "unevictable"  */
+ #ifdef CONFIG_MMU
+ 	PG_mlocked,		/* Page is vma mlocked */
+ #endif
+@@ -573,6 +574,8 @@
+ PAGEFLAG_FALSE(HighMem, highmem)
+ #endif
+ 
++PAGEFLAG(Ramcrypt, ramcrypt, PF_ANY)
++
+ /* Does kmap_local_folio() only allow access to one page of the folio? */
+ #ifdef CONFIG_DEBUG_KMAP_LOCAL_FORCE_MAP
+ #define folio_test_partial_kmap(f)	true
+diff -ruN linux-6.12.58/include/linux/sched.h linux-edited/include/linux/sched.h
+--- linux-6.12.58/include/linux/sched.h	2025-11-13 15:34:41.000000000 -0500
++++ linux-edited/include/linux/sched.h	2025-11-22 03:29:30.943740488 -0500
+@@ -925,6 +925,7 @@
+ 	struct rb_node			pushable_dl_tasks;
+ #endif
+ 
++	int                             is_enabled;
+ 	struct mm_struct		*mm;
+ 	struct mm_struct		*active_mm;
+ 	struct address_space		*faults_disabled_mapping;
+diff -ruN linux-6.12.58/include/trace/events/mmflags.h linux-edited/include/trace/events/mmflags.h
+--- linux-6.12.58/include/trace/events/mmflags.h	2025-11-13 15:34:41.000000000 -0500
++++ linux-edited/include/trace/events/mmflags.h	2025-11-22 03:55:04.317369613 -0500
+@@ -179,7 +179,8 @@
+ 	DEF_PAGEFLAG_NAME(head),					\
+ 	DEF_PAGEFLAG_NAME(reclaim),					\
+ 	DEF_PAGEFLAG_NAME(swapbacked),					\
+-	DEF_PAGEFLAG_NAME(unevictable)					\
++	DEF_PAGEFLAG_NAME(unevictable),					\
++	DEF_PAGEFLAG_NAME(ramcrypt)					\
+ IF_HAVE_PG_MLOCK(mlocked)						\
+ IF_HAVE_PG_HWPOISON(hwpoison)						\
+ IF_HAVE_PG_IDLE(idle)							\
+diff -ruN linux-6.12.58/mm/memory.c linux-edited/mm/memory.c
+--- linux-6.12.58/mm/memory.c	2025-11-13 15:34:41.000000000 -0500
++++ linux-edited/mm/memory.c	2025-11-22 04:44:31.574527812 -0500
+@@ -5811,12 +5811,50 @@
+ 	return 0;
+ }
+ 
++ // This function was written by Igor.r from stack overflow
++unsigned long virt2phys(struct mm_struct *mm, unsigned long virt){
++	pgd_t *pgd;
++	p4d_t *p4d;
++	pud_t *pud;
++	pmd_t *pmd;
++	pte_t *pte;
++	unsigned long phys;
++	struct page *page;
++
++	pgd = pgd_offset(mm, virt);
++	if (pgd_none(*pgd) || pgd_bad(*pgd))
++	return 0;
++
++	p4d = p4d_offset(pgd, virt);
++	if (p4d_none(*p4d) || p4d_bad(*p4d))
++	return 0;
++
++	pud = pud_offset(p4d, virt);
++	if (pud_none(*pud) || pud_bad(*pud))
++	return 0;
++
++	pmd = pmd_offset(pud, virt);
++	if (pmd_none(*pmd) || pmd_bad(*pmd))
++	return 0;
++
++	if (!(pte = pte_offset_map(pmd, virt)))
++	return 0;
++
++	if (!(page = pte_page(*pte)))
++	return 0;
++
++	phys = page_to_phys(page);
++	pte_unmap(pte);
++	return phys;
++}
++
+ /*
+  * On entry, we hold either the VMA lock or the mmap_lock
+  * (FAULT_FLAG_VMA_LOCK tells you which).  If VM_FAULT_RETRY is set in
+  * the result, the mmap_lock is not held on exit.  See filemap_fault()
+  * and __folio_lock_or_retry().
+  */
++
+ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
+ 		unsigned long address, unsigned int flags)
+ {
+@@ -5910,7 +5948,146 @@
+ 		}
+ 	}
+ 
+-	return handle_pte_fault(&vmf);
++	ret = handle_pte_fault(&vmf);
++
++       if (current->is_enabled == 1) {
++
++       	// Check if page has read and exec flags
++       	if ((vma->vm_flags & (VM_READ | VM_EXEC)) == 0) {
++       	        return ret;
++       	}
++
++		    pud_t *pud;
++		    pmd_t *pmd;
++		    pte_t *pte;
++		    unsigned long paddr = 0;
++		    unsigned long page_addr = 0;
++		    unsigned long page_offset = 0;
++
++		    pgd = pgd_offset(current->mm, address);
++		    if (pgd_none(*pgd)) {
++		    	printk("not mapped in pgd\n");
++		    	return ret;
++		    }
++
++           p4d = p4d_offset(pgd, address);
++           if (p4d_none(*p4d) || p4d_bad(*p4d)) {
++               printk("not mapped in p4d\n");
++               return ret;
++           }
++
++           pud = pud_offset(p4d, address);
++           if (pud_none(*pud)) {
++               printk("not mapped in pud\n");
++               return ret;
++           }
+
++		    md = pmd_offset(pud, address);
++		    if (pmd_none(*pmd)) {
++		    	printk("not mapped in pmd\n");
++		    	return ret;
++		    }
++
++		    pte = pte_offset_kernel(pmd, address);
++		    if (pte_none(*pte)) {
++		    	printk("not mapped in pte\n");
++		    	return ret;
++		    }
++
++
++		    /* Page frame physical address mechanism | offset */
++		    page_addr = pte_val(*pte) & PAGE_MASK;
++		    page_offset = address & ~PAGE_MASK;
++		    paddr = page_addr | page_offset;
++		                          
++		    struct mm_struct *mm;
++		    unsigned long vpage;
++		    unsigned long phys;
++
++		    mm = current->mm;
++
++           struct page *page;
++           void *maddr;
++           int i;
++           int first_25 = 0;
++           unsigned long epfn;
++           int one_page = 0;
++
++		    for (vpage = mm->start_code; vpage < mm->end_code; vpage += PAGE_SIZE) {
++		    	phys = virt2phys(mm, vpage);
++		    	//check if page is loaded into memory
++		    	if ( phys != 0x0 ) {
++		    	
++		    		epfn = __phys_to_pfn(phys & PAGE_MASK);
++		    		page = pfn_to_page(epfn);
++		    		
++		    		// If page not yet decrypted
++		    		if (!PageRamcrypt(page)) 
++		    		{
++		    			SetPageRamcrypt(page);
++
++		    			
++		    			if (!trylock_page(page)) {
++		    				printk("page lock failed \n");
++		    				return ret;
++		    			}
++
++		    			maddr = kmap(page);
++		    			u8 *d = maddr;
++		    			for (i = 0; i < PAGE_SIZE; i++) {
++		    				char key = 's';         // encryption key
++		    				char decrypted = d[i] ^ key; // decryption
++		    				d[i] = decrypted;
++
++		    			}
++
++		    			unlock_page(page);
++		    			kunmap(page);
++		    		}
++		    	}
++		    }
++       }
++
++       return ret;
+ }
+ 
+ /**

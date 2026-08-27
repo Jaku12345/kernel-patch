@@ -1,0 +1,5 @@
+This repository contains a Linux kernel patch for Linux kernel version 6.12.58 that enables encrypted program text segments to be decrypted at runtime at the kernel level.
+
+The patch was developed and tested on a Debian 13 system running a 6.12.58-based kernel. The repository includes a detailed description of the project, its implementation, and the relevant patch files.
+
+For a complete technical description and implementation details please refer to the attached PDF and the project repository.
